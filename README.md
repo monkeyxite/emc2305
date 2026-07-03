@@ -19,6 +19,14 @@ The vendor kernel (`6.1.115-vendor-rk35xx`) shipped with Armbian for the ROCK 5C
 
 ## Patches / Changes from upstream Linux 6.1
 
+### 0. Summary
+
+| # | Change | Why |
+|---|--------|-----|
+| 1 | Add OF match table | Driver doesn't auto-bind to DT nodes |
+| 2 | Fix device ID range check | Inverted enum causes -ENODEV on all chips |
+| 3 | Enable direct drive mode on probe | Chip boots in RPM-control mode, ignoring PWM writes |
+
 ### 1. Device Tree (OF) match table
 
 The upstream Linux 6.1 driver only supports i2c name-based matching (`i2c_device_id`). It lacks an `of_match_table`, so the driver does not auto-bind to devices declared in a Device Tree overlay using `compatible = "microchip,emc2301"`.
@@ -64,6 +72,54 @@ if (device < EMC2305 || device > EMC2301)   // 0x34 <= device <= 0x37
 ```
 
 **Fix:** Changed the check to use the correct numeric bounds (`EMC2305=0x34` as lower bound, `EMC2301=0x37` as upper bound).
+
+### 3. Enable direct PWM drive mode on probe
+
+The EMC2301 boots in closed-loop RPM-control mode. In this mode the chip's internal PID algorithm maintains a target RPM by adjusting PWM automatically, and direct writes to the PWM register are ignored.
+
+The Fan Configuration register (`0x32` for fan 1) bit 7 controls the algorithm. Writing `0x00` disables it and enables direct drive mode where PWM register writes take effect immediately.
+
+**Fix:** Added `EMC2305_REG_FAN_CFG(n)` register definition and write `EMC2305_FAN_CFG_DIRECT (0x00)` during probe initialization, before setting the minimum drive.
+
+```c
+#define EMC2305_REG_FAN_CFG(n)    (0x32 + 0x10 * (n))
+#define EMC2305_FAN_CFG_DIRECT    0x00  /* direct drive, no RPM control */
+
+// In probe, for each fan channel:
+i2c_smbus_write_byte_data(client, EMC2305_REG_FAN_CFG(i), EMC2305_FAN_CFG_DIRECT);
+```
+
+## Fan Control Script
+
+With direct drive mode enabled, PWM writes to `hwmon*/pwm1` work. A userspace temperature-based fan controller script is included:
+
+```bash
+sudo cp sata-fan-control.py /usr/local/bin/
+sudo chmod +x /usr/local/bin/sata-fan-control.py
+```
+
+Create a systemd service at `/etc/systemd/system/sata-fan-control.service`:
+
+```ini
+[Unit]
+Description=SATA HAT Fan Controller (EMC2301)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/sata-fan-control.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now sata-fan-control
+```
+
+Default curve: 40°C → PWM 60 (quiet), linear ramp to 65°C → PWM 255 (full). Edit `MIN_TEMP`, `MAX_TEMP`, `MIN_PWM`, `MAX_PWM` in the script to tune.
 
 ## Device Tree overlay
 

@@ -43,6 +43,8 @@ emc2305_normal_i2c[] = { 0x27, 0x2c, 0x2d, 0x2e, 0x2f, 0x4c, 0x4d, I2C_CLIENT_EN
 #define EMC2305_REG_FAN_DRIVE(n)	(0x30 + 0x10 * (n))
 #define EMC2305_REG_FAN_MIN_DRIVE(n)	(0x38 + 0x10 * (n))
 #define EMC2305_REG_FAN_TACH(n)		(0x3e + 0x10 * (n))
+#define EMC2305_REG_FAN_CFG(n)		(0x32 + 0x10 * (n))
+#define EMC2305_FAN_CFG_DIRECT		0x00	/* direct drive, no RPM control */
 
 enum emc230x_product_id {
 	EMC2305 = 0x34,
@@ -529,25 +531,25 @@ static int emc2305_probe(struct i2c_client *client, const struct i2c_device_id *
 	int ret;
 	int i;
 
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA))
+	dev_err(dev, "emc2305 probe called\n"); if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA))
 		return -ENODEV;
 
 	vendor = i2c_smbus_read_byte_data(client, EMC2305_REG_VENDOR);
-	if (vendor != EMC2305_VENDOR)
+	dev_err(dev, "vendor=0x%x\n", vendor); if (vendor != EMC2305_VENDOR)
 		return -ENODEV;
 
 	device = i2c_smbus_read_byte_data(client, EMC2305_REG_DEVICE);
-	if (device < EMC2305 || device > EMC2301)
+	dev_err(dev, "device=0x%x\n", device); if (device < EMC2305 || device > EMC2301)
 		return -ENODEV;
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	i2c_set_clientdata(client, data);
+	i2c_set_clientdata(client, data); dev_err(dev, "after kzalloc\n");
 	data->client = client;
 
-	ret = emc2305_identify(dev);
+	ret = emc2305_identify(dev); dev_err(dev, "emc2305_identify returned %d\n", ret);
 	if (ret)
 		return ret;
 
@@ -580,12 +582,14 @@ static int emc2305_probe(struct i2c_client *client, const struct i2c_device_id *
 		return PTR_ERR(data->hwmon_dev);
 
 	if (IS_REACHABLE(CONFIG_THERMAL)) {
-		ret = emc2305_set_tz(dev);
+		ret = emc2305_set_tz(dev); dev_err(dev, "emc2305_set_tz returned %d\n", ret);
 		if (ret != 0)
 			return ret;
 	}
 
 	for (i = 0; i < data->pwm_num; i++) {
+		/* Enable direct PWM drive mode (disable EMC230x RPM algorithm) */
+		i2c_smbus_write_byte_data(client, EMC2305_REG_FAN_CFG(i), EMC2305_FAN_CFG_DIRECT);
 		ret = i2c_smbus_write_byte_data(client, EMC2305_REG_FAN_MIN_DRIVE(i),
 						data->pwm_min[i]);
 		if (ret < 0)
